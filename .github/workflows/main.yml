@@ -1,0 +1,105 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Verify project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository contents:"
+          pwd
+          ls -la
+
+          required_files=(
+            "project.yml"
+            "App-Info.plist"
+            "ContentView.swift"
+            "FloatingPillView.swift"
+            "LiveActivityController.swift"
+            "NotificationManager.swift"
+            "PillActivityAttributes.swift"
+            "PillOverlayApp.swift"
+            "PillOverlay.entitlements"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing required file: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required project files were found."
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          test -d PillOverlay.xcodeproj
+
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf build
+          mkdir -p build/Payload
+
+          xcodebuild \
+            -project PillOverlay.xcodeproj \
+            -scheme PillOverlay \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+          APP_PATH="$(find \
+            build/DerivedData/Build/Products/Release-iphoneos \
+            -maxdepth 1 \
+            -type d \
+            -name 'PillOverlay.app' \
+            | head -n 1)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "PillOverlay.app was not found."
+            find build/DerivedData/Build/Products -maxdepth 4 -print
+            exit 1
+          fi
+
+          cp -R "$APP_PATH" build/Payload/PillOverlay.app
+
+          cd build
+          zip -qry PillOverlay-unsigned.ipa Payload
+
+          test -f PillOverlay-unsigned.ipa
+          echo "Successfully created PillOverlay-unsigned.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PillOverlay-unsigned-ipa
+          path: build/PillOverlay-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
